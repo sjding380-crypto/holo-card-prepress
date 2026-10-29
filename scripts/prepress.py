@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import shutil
 import sys
 from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps, ImageCms
 from io import BytesIO
@@ -227,6 +228,12 @@ def export(out, mask_dir):
     return result
 
 
+def delivery_fingerprint(delivery):
+    files = {str(p.relative_to(delivery)): digest(p)
+             for p in sorted(delivery.rglob('*')) if p.is_file()}
+    return hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
+
+
 def review(out, stage, decision, evidence):
     """Record review against actual delivered bytes; this does not establish user intent."""
     out, r, _, _, _ = current_job(out)
@@ -235,8 +242,7 @@ def review(out, stage, decision, evidence):
     delivery = out / "delivery"
     if not delivery.is_dir():
         raise ValueError("No proof to review")
-    files = {str(p.relative_to(delivery)): digest(p) for p in sorted(delivery.rglob("*")) if p.is_file()}
-    fingerprint = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
+    fingerprint = delivery_fingerprint(delivery)
     if stage == "final" and decision == "approve":
         p = out / "review_proof.json"
         proof = read_json(p) if p.exists() else {}
@@ -248,6 +254,41 @@ def review(out, stage, decision, evidence):
               "source_sha256": r["source_sha256"]}
     write_json(out / f"review_{stage}.json", result)
     return result
+
+
+def package(out):
+    """Copy only the approved production images; keep all review artifacts internal."""
+    out, r, _, _, _ = current_job(out)
+    delivery, final = out / 'delivery', out / 'final'
+    if final.exists():
+        raise ValueError('final exists; use a new versioned job directory')
+    if not delivery.is_dir():
+        raise ValueError('No delivery to package')
+    fingerprint = delivery_fingerprint(delivery)
+    for stage in ('proof', 'final'):
+        path = out / f'review_{stage}.json'
+        record = read_json(path) if path.is_file() else {}
+        if record.get('decision') != 'approve':
+            raise ValueError(f'Current {stage} approval required / 缺当前效果或定稿确认')
+        if (record.get('delivery_sha256') != fingerprint
+                or any(record.get(k) != r[k] for k in ('source_sha256', 'plan_sha256'))):
+            raise ValueError('Delivery changed / 文件变化，请重新确认')
+    names = ['01_color.png', '02_white_ink_rgba.png']
+    if (delivery / '03_varnish.png').is_file():
+        names.append('03_varnish.png')
+    sizes = []
+    for name in names:
+        with Image.open(delivery / name) as im:
+            if im.format != 'PNG':
+                raise ValueError('Production images must be actual PNG files')
+            sizes.append(im.size)
+            im.verify()
+    if len(set(sizes)) != 1:
+        raise ValueError('Production image size mismatch / 生产图尺寸不一致')
+    final.mkdir()
+    for name in names:
+        shutil.copyfile(delivery / name, final / name)
+    return {'files': [str(final / name) for name in names], 'count': len(names)}
 
 
 def main():
@@ -268,6 +309,8 @@ def main():
     a.add_argument("--stage", choices=["proof", "final"], required=True)
     a.add_argument("--decision", choices=["approve", "revise"], required=True)
     a.add_argument("--evidence", required=True)
+    a = subs.add_parser("package")
+    a.add_argument("--out", required=True, type=Path)
     args = vars(parser.parse_args())
     command = args.pop("command")
     if command == "annotate":

@@ -176,6 +176,47 @@ class PrepressTests(unittest.TestCase):
         with Image.open(self.job / "delivery" / "cutouts" / "F01_color.png") as cutout:
             self.assertIn(cutout.getpixel((20, 20))[3], (63, 64))
 
+    def prepare_final(self, varnish=False):
+        self.annotate()
+        self.approve()
+        self.make_mask()
+        self.api.export(self.job, self.masks)
+        if varnish:
+            Image.new('L', (120, 180), 255).save(self.job / 'delivery' / '03_varnish.png')
+        self.api.review(self.job, 'proof', 'approve', '此版效果满意')
+        self.api.review(self.job, 'final', 'approve', '此版文件定稿')
+
+    def test_package_contains_only_two_production_images(self):
+        self.prepare_final()
+        self.api.package(self.job)
+        final = self.job / 'final'
+        self.assertEqual(sorted(p.name for p in final.iterdir()),
+                         ['01_color.png', '02_white_ink_rgba.png'])
+        for p in final.iterdir():
+            self.assertEqual(p.read_bytes(), (self.job / 'delivery' / p.name).read_bytes())
+        with self.assertRaisesRegex(ValueError, 'exists'):
+            self.api.package(self.job)
+
+    def test_package_rejects_unapproved_or_changed_delivery(self):
+        self.annotate()
+        self.approve()
+        self.make_mask()
+        self.api.export(self.job, self.masks)
+        with self.assertRaisesRegex(ValueError, 'final|定稿'):
+            self.api.package(self.job)
+        self.api.review(self.job, 'proof', 'approve', '满意')
+        self.api.review(self.job, 'final', 'approve', '定稿')
+        Image.new('L', (120, 180), 255).save(self.job / 'delivery' / '03_varnish.png')
+        with self.assertRaisesRegex(ValueError, 'changed|变化'):
+            self.api.package(self.job)
+        self.assertFalse((self.job / 'final').exists())
+
+    def test_package_adds_only_an_approved_varnish_image(self):
+        self.prepare_final(varnish=True)
+        self.api.package(self.job)
+        self.assertEqual(sorted(p.name for p in (self.job / 'final').iterdir()),
+                         ['01_color.png', '02_white_ink_rgba.png', '03_varnish.png'])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
