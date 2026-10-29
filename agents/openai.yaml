@@ -1,0 +1,4 @@
+interface:
+  display_name: "闪卡制作与白墨分层"
+  short_description: "为实体局部闪卡规划发闪元素，先标记确认，再抠图并输出白墨与彩印文件"
+  default_prompt: "使用 $holo-card-prepress 分析这张图，先提供带编号的发闪区域标记图，等我确认后再制作白墨版和厂家交付文件。"
